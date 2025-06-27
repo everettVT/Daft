@@ -1239,23 +1239,53 @@ class DataFrame:
         uri: Union[str, pathlib.Path],
         mode: Literal["create", "append", "overwrite"] = "create",
         io_config: Optional[IOConfig] = None,
+        # NEW: Critical missing parameters from Lance
+        max_rows_per_file: Optional[int] = None,
+        max_rows_per_group: Optional[int] = None,
+        max_bytes_per_file: Optional[int] = None,
+        commit_lock: Optional[object] = None,
+        progress: Optional[object] = None,
+        storage_options: Optional[dict] = None,
+        data_storage_version: Optional[str] = None,
+        enable_v2_manifest_paths: bool = False,
+        enable_move_stable_row_ids: bool = False,
+        auto_cleanup_options: Optional[dict] = None,
         **kwargs: Any,
     ) -> "DataFrame":
-        """Writes the DataFrame to a Lance table.
+        """Writes the DataFrame to a Lance dataset.
 
         Args:
-          uri: The URI of the Lance table to write to
+          uri: The URI of the Lance dataset to write to
           mode: The write mode. One of "create", "append", or "overwrite"
           io_config (IOConfig, optional): configurations to use when interacting with remote storage.
+          max_rows_per_file: Maximum number of rows per file. Controls file size to prevent 
+              overly large files. Default is 256K rows (instead of Lance's 1M default).
+          max_rows_per_group: Maximum number of rows per group within a file. Controls row 
+              group size for better I/O performance.
+          max_bytes_per_file: Maximum number of bytes per file. This is a soft limit checked
+              after each group. Default is 10GB (instead of Lance's 90GB default).
+          commit_lock: Custom commit lock for distributed coordination. Only needed if your 
+              object store does not support atomic commits.
+          progress: Progress tracking callback for writing operations. Experimental API.
+          storage_options: Extra options for storage connections (credentials, endpoints, etc.).
+              If provided, takes precedence over io_config storage options.
+          data_storage_version: Version of the data storage format. Newer versions are more
+              efficient but require newer Lance versions to read.
+          enable_v2_manifest_paths: Use V2 manifest paths for more efficient dataset opening
+              on object stores with many versions.
+          enable_move_stable_row_ids: Use move-stable row IDs that remain stable after 
+              compaction (experimental).
+          auto_cleanup_options: Configuration for automatic cleanup of old dataset versions.
           **kwargs: Additional keyword arguments to pass to the Lance writer.
 
         Note:
             write_lance` requires python 3.9 or higher
 
         Examples:
+            Basic usage:
             >>> import daft
             >>> df = daft.from_pydict({"a": [1, 2, 3, 4]})
-            >>> df.write_lance("/tmp/lance/my_table.lance")  # doctest: +SKIP
+            >>> df.write_lance("/tmp/lance/my_table")  # doctest: +SKIP
             ╭───────────────┬──────────────────┬─────────────────┬─────────╮
             │ num_fragments ┆ num_deleted_rows ┆ num_small_files ┆ version │
             │ ---           ┆ ---              ┆ ---             ┆ ---     │
@@ -1263,40 +1293,44 @@ class DataFrame:
             ╞═══════════════╪══════════════════╪═════════════════╪═════════╡
             │ 1             ┆ 0                ┆ 1               ┆ 1       │
             ╰───────────────┴──────────────────┴─────────────────┴─────────╯
-            <BLANKLINE>
-            (Showing first 1 of 1 rows)
-            >>> daft.read_lance("/tmp/lance/my_table.lance").collect()  # doctest: +SKIP
-            ╭───────╮
-            │ a     │
-            │ ---   │
-            │ Int64 │
-            ╞═══════╡
-            │ 1     │
-            ├╌╌╌╌╌╌╌┤
-            │ 2     │
-            ├╌╌╌╌╌╌╌┤
-            │ 3     │
-            ├╌╌╌╌╌╌╌┤
-            │ 4     │
-            ╰───────╯
-            <BLANKLINE>
-            (Showing first 4 of 4 rows)
-            >>> # Pass additional keyword arguments to the Lance writer
-            >>> # All additional keyword arguments are passed to `lance.write_fragments`
-            >>> df.write_lance("/tmp/lance/my_table.lance", mode="overwrite", max_bytes_per_file=1024)  # doctest: +SKIP
-            ╭───────────────┬──────────────────┬─────────────────┬─────────╮
-            │ num_fragments ┆ num_deleted_rows ┆ num_small_files ┆ version │
-            │ ---           ┆ ---              ┆ ---             ┆ ---     │
-            │ Int64         ┆ Int64            ┆ Int64           ┆ Int64   │
-            ╞═══════════════╪══════════════════╪═════════════════╪═════════╡
-            │ 1             ┆ 0                ┆ 1               ┆ 2       │
-            ╰───────────────┴──────────────────┴─────────────────┴─────────╯
-            <BLANKLINE>
-            (Showing first 1 of 1 rows)
+            
+            With performance optimization:
+            >>> df.write_lance(
+            ...     "/tmp/lance/my_table",
+            ...     mode="overwrite",
+            ...     max_rows_per_file=100_000,  # Smaller files for better performance
+            ...     max_bytes_per_file=1024**3,  # 1GB file size limit
+            ...     data_storage_version="stable",  # Use latest stable format
+            ... )  # doctest: +SKIP
+            
+            With cloud storage options:
+            >>> df.write_lance(
+            ...     "s3://my-bucket/dataset",
+            ...     storage_options={
+            ...         "aws_access_key_id": "my_key",
+            ...         "aws_secret_access_key": "my_secret"
+            ...     }
+            ... )  # doctest: +SKIP
         """
         from daft.dataframe.lance_data_sink import LanceDataSink
 
-        sink = LanceDataSink(uri, self.schema(), mode, io_config, **kwargs)
+        sink = LanceDataSink(
+            uri, 
+            self.schema(), 
+            mode, 
+            io_config, 
+            max_rows_per_file=max_rows_per_file,
+            max_rows_per_group=max_rows_per_group,
+            max_bytes_per_file=max_bytes_per_file,
+            commit_lock=commit_lock,
+            progress=progress,
+            storage_options=storage_options,
+            data_storage_version=data_storage_version,
+            enable_v2_manifest_paths=enable_v2_manifest_paths,
+            enable_move_stable_row_ids=enable_move_stable_row_ids,
+            auto_cleanup_options=auto_cleanup_options,
+            **kwargs
+        )
         return self.write_sink(sink)
 
     ###

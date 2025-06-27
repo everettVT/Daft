@@ -2,9 +2,7 @@ from __future__ import annotations
 
 import pathlib
 from itertools import chain
-from typing import TYPE_CHECKING, Any, Literal
-
-import lance
+from typing import TYPE_CHECKING, Any, Literal, Optional, Callable
 
 from daft.context import get_context
 from daft.datatype import DataType
@@ -16,8 +14,7 @@ from daft.schema import Schema
 if TYPE_CHECKING:
     from collections.abc import Iterator
     from types import ModuleType
-
-    from daft.daft import IOConfig
+    import lance
 
 
 class LanceDataSink(DataSink[list[lance.FragmentMetadata]]):
@@ -36,10 +33,15 @@ class LanceDataSink(DataSink[list[lance.FragmentMetadata]]):
         uri: str | pathlib.Path,
         schema: Schema,
         mode: Literal["create", "append", "overwrite"],
-        io_config: IOConfig | None = None,
+
+        max_rows_per_file: Optional[int] = None,
+        max_rows_per_group: Optional[int] = None,
+        max_bytes_per_file: Optional[int] = None,
+        progress: Optional[Callable] = None,
+        data_storage_version: Optional[str] = None,
+        enable_move_stable_row_ids: bool = False,
         **kwargs: Any,
     ) -> None:
-        from daft.dependencies import pa
         from daft.io.object_store_options import io_config_to_storage_options
 
         lance = self._import_lance()
@@ -48,20 +50,50 @@ class LanceDataSink(DataSink[list[lance.FragmentMetadata]]):
             raise TypeError(f"Expected URI to be str or pathlib.Path, got {type(uri)}")
         self._table_uri = str(uri)
         self._mode = mode
+
         self._io_config = get_context().daft_planning_config.default_io_config if io_config is None else io_config
         self._kwargs = kwargs
 
         self._storage_options = io_config_to_storage_options(self._io_config, self._table_uri)
 
-        self._pyarrow_schema = pa.schema((f.name, f.dtype.to_arrow_dtype()) for f in schema)
+        # Store Lance-specific parameters for write operations
+        # NOTE: write_fragments() only supports a subset of write_dataset() parameters
+        self._lance_write_params = {}
+
+        # File size controls (SUPPORTED by write_fragments)
+        if max_rows_per_file is not None:
+            self._lance_write_params["max_rows_per_file"] = max_rows_per_file
+        else:
+            self._lance_write_params["max_rows_per_file"] = 256 * 1024
+
+        if max_rows_per_group is not None:
+            self._lance_write_params["max_rows_per_group"] = max_rows_per_group
+
+        if max_bytes_per_file is not None:
+            self._lance_write_params["max_bytes_per_file"] = max_bytes_per_file
+        else:
+            self._lance_write_params["max_bytes_per_file"] = 10 * 1024 * 1024 * 1024 #
+
+        # Production features (SUPPORTED by write_fragments)
+        if progress is not None:
+            self._lance_write_params["progress"] = progress
+        if data_storage_version is not None:
+            self._lance_write_params["data_storage_version"] = data_storage_version
+        if enable_move_stable_row_ids:
+            self._lance_write_params["enable_move_stable_row_ids"] = enable_move_stable_row_ids
+
+
+
+
+
+        self._pyarrow_schema = schema.to_pyarrow_schema()
 
         try:
             table = lance.dataset(self._table_uri, storage_options=self._storage_options)
-
         except ValueError:
             table = None
 
-        self._version = 0
+        self._version = 0 # Default to 0 if no table exists
         if table:
             table_schema = table.schema
             self._version = table.latest_version
@@ -92,12 +124,17 @@ class LanceDataSink(DataSink[list[lance.FragmentMetadata]]):
             bytes_written = arrow_table.nbytes
             rows_written = arrow_table.num_rows
 
+            write_params = {
+                "mode": self._mode,
+                "storage_options": self._storage_options,
+                **self._lance_write_params,
+                **self._kwargs,
+            }
+
             fragments = lance.fragment.write_fragments(
                 arrow_table,
                 dataset_uri=self._table_uri,
-                mode=self._mode,
-                storage_options=self._storage_options,
-                **self._kwargs,
+                **write_params,
             )
             yield WriteResult(
                 result=fragments,

@@ -709,8 +709,37 @@ class Table(ABC):
             raise ImportError("Unity support not installed: pip install -U 'daft[unity]'")
 
     @staticmethod
+    def from_lance(table: object) -> Table:
+        """Creates a Daft Table instance from a LanceDB table.
+
+        Args:
+            table (object): a LanceDB Table or AsyncTable instance
+
+        Returns:
+            Table: new daft table instance
+
+        Examples:
+            >>> import lancedb
+            >>> from daft.catalog import Table
+            >>>
+            >>> # Connect to LanceDB
+            >>> db = lancedb.connect("/tmp/my_lancedb")
+            >>> lancedb_table = db.open_table("my_table")
+            >>>
+            >>> # Wrap in Daft Table
+            >>> daft_table = Table.from_lance(lancedb_table)
+            >>> df = daft_table.read()
+        """
+        try:
+            from daft.catalog.__lance import LanceTable
+
+            return LanceTable._from_obj(table)
+        except ImportError:
+            raise ImportError("LanceDB support not installed: pip install -U 'lancedb'")
+
+    @staticmethod
     def _from_obj(obj: object) -> Table:
-        for factory in (Table.from_iceberg, Table.from_unity):
+        for factory in (Table.from_iceberg, Table.from_unity, Table.from_lance):
             try:
                 return factory(obj)
             except ValueError:
