@@ -5,6 +5,7 @@
 
 use std::{borrow::Cow, sync::Arc};
 
+use arrow::buffer::NullBuffer;
 use common_error::{DaftError, DaftResult};
 
 use crate::{
@@ -19,13 +20,6 @@ impl<T: DaftNumericType> From<(&str, Box<daft_arrow::array::PrimitiveArray<T::Na
     fn from(item: (&str, Box<daft_arrow::array::PrimitiveArray<T::Native>>)) -> Self {
         let (name, array) = item;
         Self::new(Field::new(name, T::get_dtype()).into(), array).unwrap()
-    }
-}
-
-impl From<(&str, Box<daft_arrow::array::NullArray>)> for NullArray {
-    fn from(item: (&str, Box<daft_arrow::array::NullArray>)) -> Self {
-        let (name, array) = item;
-        Self::new(Field::new(name, DataType::Null).into(), array).unwrap()
     }
 }
 
@@ -115,17 +109,6 @@ impl From<(&str, &[Option<bool>])> for BooleanArray {
     }
 }
 
-impl From<(&str, daft_arrow::array::BooleanArray)> for BooleanArray {
-    fn from(item: (&str, daft_arrow::array::BooleanArray)) -> Self {
-        let (name, arrow_array) = item;
-        Self::new(
-            Field::new(name, DataType::Boolean).into(),
-            Box::new(arrow_array),
-        )
-        .unwrap()
-    }
-}
-
 impl From<(&str, daft_arrow::bitmap::Bitmap)> for BooleanArray {
     fn from(item: (&str, daft_arrow::bitmap::Bitmap)) -> Self {
         let (name, bitmap) = item;
@@ -141,48 +124,11 @@ impl From<(&str, daft_arrow::bitmap::Bitmap)> for BooleanArray {
     }
 }
 
-impl From<(&str, Box<daft_arrow::array::BooleanArray>)> for BooleanArray {
-    fn from(item: (&str, Box<daft_arrow::array::BooleanArray>)) -> Self {
-        let (name, arrow_array) = item;
-        Self::new(Field::new(name, DataType::Boolean).into(), arrow_array).unwrap()
-    }
-}
-
-impl From<(&str, Vec<daft_arrow::types::months_days_ns>)> for IntervalArray {
-    fn from(item: (&str, Vec<daft_arrow::types::months_days_ns>)) -> Self {
-        let (name, vec) = item;
-        let arrow_array = Box::new(daft_arrow::array::PrimitiveArray::<
-            daft_arrow::types::months_days_ns,
-        >::from_vec(vec));
-        Self::new(Field::new(name, DataType::Interval).into(), arrow_array).unwrap()
-    }
-}
-
 impl<T: AsRef<str>> From<(&str, &[T])> for DataArray<Utf8Type> {
     fn from(item: (&str, &[T])) -> Self {
         let (name, slice) = item;
         let arrow_array = Box::new(daft_arrow::array::Utf8Array::<i64>::from_slice(slice));
         Self::new(Field::new(name, DataType::Utf8).into(), arrow_array).unwrap()
-    }
-}
-
-impl From<(&str, &[u8])> for BinaryArray {
-    fn from(item: (&str, &[u8])) -> Self {
-        let (name, slice) = item;
-        let arrow_array = Box::new(daft_arrow::array::BinaryArray::<i64>::from_slice([slice]));
-        Self::new(Field::new(name, DataType::Binary).into(), arrow_array).unwrap()
-    }
-}
-
-impl<T: DaftPhysicalType, F: Into<Arc<Field>>> TryFrom<(F, Box<dyn daft_arrow::array::Array>)>
-    for DataArray<T>
-{
-    type Error = DaftError;
-
-    fn try_from(item: (F, Box<dyn daft_arrow::array::Array>)) -> DaftResult<Self> {
-        let (field, array) = item;
-        let field: Arc<Field> = field.into();
-        Self::new(field, array)
     }
 }
 
@@ -248,7 +194,7 @@ impl TryFrom<(&str, &[Option<&Series>])> for ListArray {
         let lengths = data.iter().map(|s| s.map_or(0, Series::len));
         let offsets = daft_arrow::offset::Offsets::try_from_lengths(lengths)?.into();
 
-        let validity = daft_arrow::buffer::NullBuffer::from_iter(data.iter().map(Option::is_some));
+        let nulls = daft_arrow::buffer::NullBuffer::from_iter(data.iter().map(Option::is_some));
 
         let flat_child = Series::concat(&data.iter().flatten().copied().collect::<Vec<_>>())?;
 
@@ -256,7 +202,7 @@ impl TryFrom<(&str, &[Option<&Series>])> for ListArray {
             flat_child.field().to_list_field().rename(name),
             flat_child,
             offsets,
-            Some(validity),
+            Some(nulls),
         ))
     }
 }
@@ -270,7 +216,7 @@ impl TryFrom<(&str, &[Option<Series>])> for ListArray {
         let lengths = data.iter().map(|s| s.as_ref().map_or(0, |s| s.len()));
         let offsets = daft_arrow::offset::Offsets::try_from_lengths(lengths)?.into();
 
-        let validity = daft_arrow::buffer::NullBuffer::from_iter(data.iter().map(Option::is_some));
+        let nulls = daft_arrow::buffer::NullBuffer::from_iter(data.iter().map(Option::is_some));
 
         let flat_child = Series::concat(&data.iter().flatten().collect::<Vec<_>>())?;
 
@@ -278,7 +224,7 @@ impl TryFrom<(&str, &[Option<Series>])> for ListArray {
             flat_child.field().to_list_field().rename(name),
             flat_child,
             offsets,
-            Some(validity),
+            Some(nulls),
         ))
     }
 }
@@ -304,13 +250,13 @@ impl ListArray {
             .unwrap()
             .into();
 
-        let validity = daft_arrow::buffer::NullBuffer::from_iter(data.iter().map(Option::is_some));
+        let nulls = daft_arrow::buffer::NullBuffer::from_iter(data.iter().map(Option::is_some));
 
         Self::new(
             flat_child.field().to_list_field().rename(name),
             flat_child,
             offsets,
-            Some(validity),
+            Some(nulls),
         )
     }
 
@@ -328,13 +274,13 @@ impl ListArray {
             .unwrap()
             .into();
 
-        let validity = daft_arrow::buffer::NullBuffer::from_iter(data.iter().map(Option::is_some));
+        let nulls = daft_arrow::buffer::NullBuffer::from_iter(data.iter().map(Option::is_some));
 
         Self::new(
             flat_child.field().to_list_field().rename(name),
             flat_child,
             offsets,
-            Some(validity),
+            Some(nulls),
         )
     }
 
@@ -342,7 +288,7 @@ impl ListArray {
         let lengths = data.iter().map(|s| s.as_ref().map_or(0, |s| s.len()));
         let offsets = daft_arrow::offset::Offsets::try_from_lengths(lengths)?.into();
 
-        let validity = daft_arrow::buffer::NullBuffer::from_iter(data.iter().map(Option::is_some));
+        let nulls = daft_arrow::buffer::NullBuffer::from_iter(data.iter().map(Option::is_some));
 
         let flat_child = Series::concat(&data.iter().flatten().collect::<Vec<_>>())?;
 
@@ -350,7 +296,16 @@ impl ListArray {
             flat_child.field().to_list_field().rename(name),
             flat_child,
             offsets,
-            Some(validity),
+            Some(nulls),
         ))
+    }
+}
+
+impl BooleanArray {
+    pub fn from_null_buffer(name: &str, buf: &NullBuffer) -> DaftResult<Self> {
+        Self::from_arrow(
+            Field::new(name, DataType::Boolean),
+            Arc::new(arrow::array::BooleanArray::new(buf.inner().clone(), None)),
+        )
     }
 }
